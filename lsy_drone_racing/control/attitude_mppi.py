@@ -49,7 +49,7 @@ class AttitudeMPPI(Controller):
         self.kd = np.array([0.2, 0.2, 0.4])
         self.ki_range = np.array([2.0, 2.0, 0.4])
         self.i_error = np.zeros(3)
-        
+
         # Numerical stability constant
         self.eps = 1e-6
 
@@ -276,7 +276,8 @@ class AttitudeMPPI(Controller):
         for i in range(self.num_samples):
             optimal_control_sequence += weights[i] * control_samples[i]
 
-        # Update control sequence for next iteration (shift and append)
+        # Update control sequence for next iteration using receding horizon approach
+        # Shift the optimal sequence left (discard first control, keep remaining)
         self.control_sequence[:-1] = optimal_control_sequence[1:]
         
         # Compute proper control for the new final horizon step based on reference trajectory
