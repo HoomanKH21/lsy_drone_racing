@@ -283,10 +283,25 @@ class AttitudeMPPI(Controller):
         t_final = min((self._tick + self.horizon) / self._freq, self._t_total)
         if t_final < self._t_total:
             des_acc_final = self._des_acc_spline(t_final)
+            des_yaw_final = 0.0
             target_thrust_final = self.drone_mass * des_acc_final
             target_thrust_final[2] += self.drone_mass * self.g
+            
+            # Compute desired orientation from target thrust
             thrust_norm = np.linalg.norm(target_thrust_final)
-            self.control_sequence[-1] = np.array([0.0, 0.0, 0.0, thrust_norm])
+            z_axis_desired = target_thrust_final / (thrust_norm + self.eps)
+            x_c_des = np.array([math.cos(des_yaw_final), math.sin(des_yaw_final), 0.0])
+            y_axis_desired = np.cross(z_axis_desired, x_c_des)
+            y_norm = np.linalg.norm(y_axis_desired)
+            y_axis_desired /= (y_norm + self.eps)
+            x_axis_desired = np.cross(y_axis_desired, z_axis_desired)
+            
+            R_desired = np.vstack([x_axis_desired, y_axis_desired, z_axis_desired]).T
+            euler_desired = R.from_matrix(R_desired).as_euler("xyz", degrees=False)
+            
+            self.control_sequence[-1] = np.array([
+                euler_desired[0], euler_desired[1], euler_desired[2], thrust_norm
+            ])
         else:
             # At end of trajectory, use hover control
             self.control_sequence[-1] = np.array([0.0, 0.0, 0.0, self.drone_mass * self.g])
