@@ -120,10 +120,12 @@ class AttitudeMPPI(Controller):
         target_thrust[2] += self.drone_mass * self.g
 
         # Compute desired orientation from target thrust
-        z_axis_desired = target_thrust / np.linalg.norm(target_thrust)
+        thrust_norm = np.linalg.norm(target_thrust)
+        z_axis_desired = target_thrust / (thrust_norm + 1e-6)
         x_c_des = np.array([math.cos(des_yaw), math.sin(des_yaw), 0.0])
         y_axis_desired = np.cross(z_axis_desired, x_c_des)
-        y_axis_desired /= np.linalg.norm(y_axis_desired)
+        y_norm = np.linalg.norm(y_axis_desired)
+        y_axis_desired /= (y_norm + 1e-6)
         x_axis_desired = np.cross(y_axis_desired, z_axis_desired)
 
         R_desired = np.vstack([x_axis_desired, y_axis_desired, z_axis_desired]).T
@@ -253,7 +255,9 @@ class AttitudeMPPI(Controller):
                 control_samples[i, :, 3], 0.0, 4 * self.drone_mass * self.g
             )  # Clip thrust
 
-            # Evaluate cost for this trajectory (simplified - just evaluate first step)
+            # Evaluate cost for this trajectory
+            # Note: Simplified version that only evaluates immediate cost rather than full horizon
+            # A complete implementation would simulate forward using dynamics model
             t_eval = min((self._tick) / self._freq, self._t_total)
             costs[i] = self._evaluate_cost(obs, control_samples[i, 0], t_eval)
 
@@ -269,9 +273,18 @@ class AttitudeMPPI(Controller):
 
         # Update control sequence for next iteration (shift and append)
         self.control_sequence[:-1] = optimal_control_sequence[1:]
-        self.control_sequence[-1] = optimal_control_sequence[
-            -1
-        ]  # Repeat last control for final horizon step
+        
+        # Compute proper control for the new final horizon step based on reference trajectory
+        t_final = min((self._tick + self.horizon) / self._freq, self._t_total)
+        if t_final < self._t_total:
+            des_acc_final = self._des_acc_spline(t_final)
+            target_thrust_final = self.drone_mass * des_acc_final
+            target_thrust_final[2] += self.drone_mass * self.g
+            thrust_norm = np.linalg.norm(target_thrust_final)
+            self.control_sequence[-1] = np.array([0.0, 0.0, 0.0, thrust_norm])
+        else:
+            # At end of trajectory, use hover control
+            self.control_sequence[-1] = np.array([0.0, 0.0, 0.0, self.drone_mass * self.g])
 
         # Return the first control in the optimal sequence
         action = optimal_control_sequence[0].astype(np.float32)
