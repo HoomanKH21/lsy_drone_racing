@@ -49,6 +49,9 @@ class AttitudeMPPI(Controller):
         self.kd = np.array([0.2, 0.2, 0.4])
         self.ki_range = np.array([2.0, 2.0, 0.4])
         self.i_error = np.zeros(3)
+        
+        # Numerical stability constant
+        self.eps = 1e-6
 
         # MPPI parameters
         self.horizon = 10  # Number of timesteps to look ahead
@@ -121,11 +124,11 @@ class AttitudeMPPI(Controller):
 
         # Compute desired orientation from target thrust
         thrust_norm = np.linalg.norm(target_thrust)
-        z_axis_desired = target_thrust / (thrust_norm + 1e-6)
+        z_axis_desired = target_thrust / (thrust_norm + self.eps)
         x_c_des = np.array([math.cos(des_yaw), math.sin(des_yaw), 0.0])
         y_axis_desired = np.cross(z_axis_desired, x_c_des)
         y_norm = np.linalg.norm(y_axis_desired)
-        y_axis_desired /= (y_norm + 1e-6)
+        y_axis_desired /= (y_norm + self.eps)
         x_axis_desired = np.cross(y_axis_desired, z_axis_desired)
 
         R_desired = np.vstack([x_axis_desired, y_axis_desired, z_axis_desired]).T
@@ -169,10 +172,12 @@ class AttitudeMPPI(Controller):
                 target_thrust[2] += self.drone_mass * self.g
                 
                 # Compute desired orientation from target thrust
-                z_axis_desired = target_thrust / (np.linalg.norm(target_thrust) + 1e-6)
+                thrust_norm = np.linalg.norm(target_thrust)
+                z_axis_desired = target_thrust / (thrust_norm + self.eps)
                 x_c_des = np.array([math.cos(des_yaw), math.sin(des_yaw), 0.0])
                 y_axis_desired = np.cross(z_axis_desired, x_c_des)
-                y_axis_desired /= (np.linalg.norm(y_axis_desired) + 1e-6)
+                y_norm = np.linalg.norm(y_axis_desired)
+                y_axis_desired /= (y_norm + self.eps)
                 x_axis_desired = np.cross(y_axis_desired, z_axis_desired)
                 
                 R_desired = np.vstack([x_axis_desired, y_axis_desired, z_axis_desired]).T
