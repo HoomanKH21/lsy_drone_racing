@@ -138,13 +138,48 @@ class AttitudeMPPI(Controller):
     def _update_baseline_sequence(self, obs: dict[str, NDArray[np.floating]]) -> None:
         """Update the baseline control sequence to follow the reference trajectory.
 
+        For each timestep in the horizon, compute the control that would track the reference
+        trajectory at that future time. This provides a good baseline for MPPI perturbations.
+
         Args:
             obs: Current observation.
         """
-        # Compute baseline controls for the horizon
+        # Compute baseline control for the horizon using reference trajectory
+        # We use the current obs as a starting point and compute controls for future reference points
         for i in range(self.horizon):
             t_future = min((self._tick + i) / self._freq, self._t_total)
-            self.control_sequence[i] = self._compute_baseline_control(obs, t_future)
+            
+            # For future timesteps, we compute what control would be needed to track
+            # the reference at that time, assuming we follow the reference trajectory
+            if i == 0:
+                # For the current timestep, use actual observation
+                self.control_sequence[i] = self._compute_baseline_control(obs, t_future)
+            else:
+                # For future timesteps, create a "virtual" observation at the reference position
+                # This is a simplification that assumes we'll be on the reference trajectory
+                des_pos = self._des_pos_spline(t_future)
+                des_vel = self._des_vel_spline(t_future)
+                des_acc = self._des_acc_spline(t_future)
+                des_yaw = 0.0
+                
+                # Compute feedforward control based on reference
+                target_thrust = self.drone_mass * des_acc
+                target_thrust[2] += self.drone_mass * self.g
+                
+                # Compute desired orientation from target thrust
+                z_axis_desired = target_thrust / (np.linalg.norm(target_thrust) + 1e-6)
+                x_c_des = np.array([math.cos(des_yaw), math.sin(des_yaw), 0.0])
+                y_axis_desired = np.cross(z_axis_desired, x_c_des)
+                y_axis_desired /= (np.linalg.norm(y_axis_desired) + 1e-6)
+                x_axis_desired = np.cross(y_axis_desired, z_axis_desired)
+                
+                R_desired = np.vstack([x_axis_desired, y_axis_desired, z_axis_desired]).T
+                euler_desired = R.from_matrix(R_desired).as_euler("xyz", degrees=False)
+                thrust_desired = np.linalg.norm(target_thrust)
+                
+                self.control_sequence[i] = np.array([
+                    euler_desired[0], euler_desired[1], euler_desired[2], thrust_desired
+                ])
 
     def _evaluate_cost(
         self,
