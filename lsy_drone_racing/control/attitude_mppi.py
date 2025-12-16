@@ -48,10 +48,10 @@ class AttitudeMPPIController(Controller):
         self._config = config
 
         # MPPI hyperparameters - optimized for robust trajectory optimization
-        self.mppi_horizon = 32  # Planning horizon steps (increased for better foresight)
+        self.mppi_horizon = 28  # Planning horizon steps (increased slightly for better foresight)
         self.mppi_dt = self._dt * 2  # 0.04s time discretization
-        self.num_samples = 5000  # Balanced optimization quality with efficiency
-        self.lambda_weight = 7.5  # Temperature parameter - lower for more exploration
+        self.num_samples = 6000  # Stable optimization quality
+        self.lambda_weight = 8.5  # Temperature parameter (slightly lower for more exploration)
         
         # Gate geometry constants
         self.gate_opening = 0.30  # 30cm square opening
@@ -97,17 +97,17 @@ class AttitudeMPPIController(Controller):
         self.goal = self.gates_pos[self.target_gate_idx]
         self.prev_goal = self.goal.copy()
 
-        # Slightly less conservative control limits for improved agility
-        self.rpy_max = 0.35  # ±20 degrees (increased for better maneuverability)
+        # More conservative control limits
+        self.rpy_max = 0.3  # ±17 degrees (more conservative)
         self.thrust_min = self.drone_params["thrust_min"] * 4
         self.thrust_max = self.drone_params["thrust_max"] * 4
         self.hover_thrust = self.drone_params["mass"] * abs(self.drone_params["gravity_vec"][-1])
 
-        # Simplified cost weights - balanced for higher success rate
+        # Simplified cost weights - balanced aggressive for 4-gate success
         self.cost_weights = {
-              "position": torch.tensor([18.0, 18.0, 15.0], device=self.device, dtype=self.dtype),  # Slightly reduced for smoother trajectories
-              "velocity": torch.tensor([0.035, 0.035, 0.110], device=self.device, dtype=self.dtype),  # Reduced damping for more speed
-            "attitude": torch.tensor([1.2, 1.2, 0.15], device=self.device, dtype=self.dtype),  # Lower for more agility
+              "position": torch.tensor([19.0, 19.0, 15.5], device=self.device, dtype=self.dtype),  # Slightly reduced for smoother approach
+              "velocity": torch.tensor([0.038, 0.038, 0.120], device=self.device, dtype=self.dtype),  # Slightly reduced damping
+            "attitude": torch.tensor([1.4, 1.4, 0.18], device=self.device, dtype=self.dtype),  # Slightly lower for more agility
             "z_floor": 2000.0,  # Strong penalty for ground collision (Z < 0.03m)
         }
 
@@ -136,9 +136,9 @@ class AttitudeMPPIController(Controller):
             device=self.device
         )
 
-        # Control noise for exploration-exploitation balance
+        # Smaller control noise for smoother sampling
         noise_sigma = torch.diag(torch.tensor(
-            [0.06, 0.06, 0.06, 0.25],  # Slightly increased for better exploration
+            [0.05, 0.05, 0.05, 0.2],  # Reduced noise
             dtype=self.dtype,
             device=self.device
         ))
@@ -164,7 +164,7 @@ class AttitudeMPPIController(Controller):
 
         self.step_count = 0
 
-        print("[AttitudeMPPI] Initialization complete - Enhanced for higher success rate")
+        print("[AttitudeMPPI] Initialization complete - Conservative tuning for stability")
         print(f"  - Horizon: {self.mppi_horizon} steps @ {self.mppi_dt:.3f}s = {self.mppi_horizon * self.mppi_dt:.2f}s")
         print(f"  - Samples: {self.num_samples}")
         print(f"  - Lambda: {self.lambda_weight}")
@@ -194,8 +194,8 @@ class AttitudeMPPIController(Controller):
         goal_t = torch.tensor(self.goal, dtype=self.dtype, device=self.device)
         pos_error = pos - goal_t
         dist_to_goal = torch.norm(pos_error, dim=-1)
-        # 2.0x position cost when within 0.4m for tighter precision at gate (reduced from 2.2x)
-        proximity_scale = torch.where(dist_to_goal < 0.4, 2.0, 1.0)
+        # 2.1x position cost when within 0.4m for tighter precision at gate (slightly reduced)
+        proximity_scale = torch.where(dist_to_goal < 0.4, 2.1, 1.0)
         c_pos = proximity_scale * torch.sum(self.cost_weights["position"] * pos_error ** 2, dim=-1)
 
         # 1a. Attraction to gate opening and obstacle avoidance for gate frames
@@ -221,19 +221,19 @@ class AttitudeMPPIController(Controller):
         # Hinge loss if outside opening in y or z
         y_excess = torch.clamp(torch.abs(y_p) - opening_half, min=0.0)
         z_excess = torch.clamp(torch.abs(z_p) - opening_half, min=0.0)
-        w_open = 10.0  # Reduced from 12.0 for less aggressive correction
+        w_open = 11.5  # Slightly reduced for smoother correction
         c_open_hinge = w_open * (y_excess ** 2 + z_excess ** 2)
 
         # Soft attraction toward the 2D opening center (y=0, z=0) when near the gate plane
         near_plane = torch.abs(x_n) < 0.6
-        w_center = 3.8  # Reduced from 4.5 for smoother approach
+        w_center = 4.3  # Slightly reduced for smoother approach
         c_center = torch.where(near_plane, w_center * (y_p ** 2 + z_p ** 2), torch.zeros_like(x_n))
 
         # Obstacle avoidance: vertical frames modeled as infinite poles at y=±edge_offset
         # Penalize inverse-square proximity inside safety radius
         dy_left = torch.abs(y_p + edge_offset)
         dy_right = torch.abs(y_p - edge_offset)
-        w_vert = 110.0  # Reduced from 120.0 for less conservative avoidance
+        w_vert = 120.0
         c_vert = w_vert * (torch.clamp(safety_r - dy_left, min=0.0) ** 2 + torch.clamp(safety_r - dy_right, min=0.0) ** 2)
 
         # Obstacle avoidance: horizontal frames modeled as capsules along y at z=±edge_offset
@@ -241,7 +241,7 @@ class AttitudeMPPIController(Controller):
         dz_bottom = torch.abs(z_p + edge_offset)
         # Active only when within lateral span around the gate opening (|y| <= opening_half + frame_t)
         within_span = torch.abs(y_p) <= (opening_half + frame_t)
-        w_horiz = 90.0  # Reduced from 100.0 for less conservative avoidance
+        w_horiz = 100.0
         c_horiz = torch.where(within_span, w_horiz * (torch.clamp(safety_r - dz_top, min=0.0) ** 2 + torch.clamp(safety_r - dz_bottom, min=0.0) ** 2), torch.zeros_like(dz_top))
 
         c_gate_struct = c_open_hinge + c_center + c_vert + c_horiz
@@ -255,7 +255,7 @@ class AttitudeMPPIController(Controller):
             torch.minimum(dz_top, dz_bottom)
         )
         high_risk = min_frame_dist < (safety_r + 0.01)
-        w_slow = 0.3  # Reduced from 0.4 to allow slightly more speed near frames
+        w_slow = 0.4
         c_slow = torch.where(high_risk, w_slow * torch.sum(vel ** 2, dim=-1), torch.zeros_like(min_frame_dist))
 
         # 3. Attitude - prefer level flight
