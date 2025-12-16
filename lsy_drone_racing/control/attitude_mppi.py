@@ -48,10 +48,10 @@ class AttitudeMPPIController(Controller):
         self._config = config
 
         # MPPI hyperparameters - optimized for robust trajectory optimization
-        self.mppi_horizon = 25  # Planning horizon steps (proven stable for 4-gate success)
+        self.mppi_horizon = 28  # Planning horizon steps (increased slightly for better foresight)
         self.mppi_dt = self._dt * 2  # 0.04s time discretization
         self.num_samples = 6000  # Stable optimization quality
-        self.lambda_weight = 9.5  # Temperature parameter tuned for improved transitions
+        self.lambda_weight = 8.5  # Temperature parameter (slightly lower for more exploration)
         
         # Gate geometry constants
         self.gate_opening = 0.30  # 30cm square opening
@@ -105,9 +105,9 @@ class AttitudeMPPIController(Controller):
 
         # Simplified cost weights - balanced aggressive for 4-gate success
         self.cost_weights = {
-              "position": torch.tensor([20.0, 20.0, 16.0], device=self.device, dtype=self.dtype),  # Breakthrough config
-              "velocity": torch.tensor([0.040, 0.040, 0.125], device=self.device, dtype=self.dtype),  # Stabilized without losing too much speed
-            "attitude": torch.tensor([1.5, 1.5, 0.2], device=self.device, dtype=self.dtype),  # Lower for agility
+              "position": torch.tensor([19.0, 19.0, 15.5], device=self.device, dtype=self.dtype),  # Slightly reduced for smoother approach
+              "velocity": torch.tensor([0.038, 0.038, 0.120], device=self.device, dtype=self.dtype),  # Slightly reduced damping
+            "attitude": torch.tensor([1.4, 1.4, 0.18], device=self.device, dtype=self.dtype),  # Slightly lower for more agility
             "z_floor": 2000.0,  # Strong penalty for ground collision (Z < 0.03m)
         }
 
@@ -164,7 +164,7 @@ class AttitudeMPPIController(Controller):
 
         self.step_count = 0
 
-        print("[AttitudeMPPI] Initialization complete")
+        print("[AttitudeMPPI] Initialization complete - Conservative tuning for stability")
         print(f"  - Horizon: {self.mppi_horizon} steps @ {self.mppi_dt:.3f}s = {self.mppi_horizon * self.mppi_dt:.2f}s")
         print(f"  - Samples: {self.num_samples}")
         print(f"  - Lambda: {self.lambda_weight}")
@@ -194,8 +194,8 @@ class AttitudeMPPIController(Controller):
         goal_t = torch.tensor(self.goal, dtype=self.dtype, device=self.device)
         pos_error = pos - goal_t
         dist_to_goal = torch.norm(pos_error, dim=-1)
-        # 2.2x position cost when within 0.4m for tighter precision at gate
-        proximity_scale = torch.where(dist_to_goal < 0.4, 2.2, 1.0)
+        # 2.1x position cost when within 0.4m for tighter precision at gate (slightly reduced)
+        proximity_scale = torch.where(dist_to_goal < 0.4, 2.1, 1.0)
         c_pos = proximity_scale * torch.sum(self.cost_weights["position"] * pos_error ** 2, dim=-1)
 
         # 1a. Attraction to gate opening and obstacle avoidance for gate frames
@@ -221,12 +221,12 @@ class AttitudeMPPIController(Controller):
         # Hinge loss if outside opening in y or z
         y_excess = torch.clamp(torch.abs(y_p) - opening_half, min=0.0)
         z_excess = torch.clamp(torch.abs(z_p) - opening_half, min=0.0)
-        w_open = 12.0
+        w_open = 11.5  # Slightly reduced for smoother correction
         c_open_hinge = w_open * (y_excess ** 2 + z_excess ** 2)
 
         # Soft attraction toward the 2D opening center (y=0, z=0) when near the gate plane
         near_plane = torch.abs(x_n) < 0.6
-        w_center = 4.5
+        w_center = 4.3  # Slightly reduced for smoother approach
         c_center = torch.where(near_plane, w_center * (y_p ** 2 + z_p ** 2), torch.zeros_like(x_n))
 
         # Obstacle avoidance: vertical frames modeled as infinite poles at y=±edge_offset
